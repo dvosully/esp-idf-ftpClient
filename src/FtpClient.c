@@ -305,6 +305,7 @@ static int sendCommand(const char* cmd, char expresp, NetBuf_t* nControl)
 
 
 
+#ifdef CONFIG_FATFS_USE_VFS
 /*
  * Xfer - issue a command and transfer data
  *
@@ -377,7 +378,100 @@ static int xfer(const char* localfile, const char* path,
 	closeFtpClient(nData);
 	return rv;
 }
+#else
+#warning FatFs File interface
+#include "ff.h"
+/*
+ * Xfer - issue a command and transfer data
+ *
+ * return 1 if successful, 0 otherwise
+ */
+static int xfer(const char* localfile, const char* path,
+	NetBuf_t* nControl, int typ, int mode)
+{
+	FIL fflocal;
+	//FILE* local = NULL;
+	FRESULT res = FR_OK;
+	NetBuf_t* nData;
 
+	if (localfile != NULL) {
+		//char ac[4];
+		BYTE mode = 0;
+		//memset( ac, 0, sizeof(ac) );
+		if (typ == FTP_CLIENT_FILE_WRITE)
+		//	ac[0] = 'r';
+			mode = FA_READ;
+		else
+		//	ac[0] = 'w';
+			mode = FA_WRITE | FA_CREATE_ALWAYS;
+		//if (mode == FTP_CLIENT_IMAGE)
+		//	ac[1] = 'b';
+		//local = fopen(localfile, ac);
+		res = f_open(&fflocal, localfile, mode);
+		//if (local == NULL) {
+		if (FR_OK != res) {
+			strncpy(nControl->response, strerror(errno),
+						sizeof(nControl->response));
+			return 0;
+		}
+	}
+	//if(local == NULL)
+	//else
+	//	local = (typ == FTP_CLIENT_FILE_WRITE) ? stdin : stdout;
+	if (!accessFtpClient(path, typ, mode, nControl, &nData)) {
+		if (localfile) {
+			//fclose(local);
+			res = f_close(&fflocal);
+			if (typ == FTP_CLIENT_FILE_READ)
+				//unlink(localfile);
+				f_unlink(localfile);
+		}
+		return 0;
+	}
+
+	int rv = 1;
+	int l = 0;
+	UINT ul = 0;
+	char* dbuf = malloc(FTP_CLIENT_BUFFER_SIZE);
+	if (typ == FTP_CLIENT_FILE_WRITE) {
+		//while ((l = fread(dbuf, 1, FTP_CLIENT_BUFFER_SIZE, local)) > 0) {
+		while ((res = f_read(&fflocal, dbuf, FTP_CLIENT_BUFFER_SIZE, &ul)) == FR_OK) {
+			if (0 == ul)
+				break;
+			int c = writeFtpClient(dbuf, (int)ul, nData);
+			if (c < ul) {
+				printf("Ftp Client xfer short write: passed %d, wrote %d\n", ul, c);
+				rv = 0;
+				break;
+			}
+		}
+	}
+	else {
+		while ((l = readFtpClient(dbuf, FTP_CLIENT_BUFFER_SIZE, nData)) > 0) {
+			//if (fwrite(dbuf, 1, l, local) == 0) {
+			res = f_write(&fflocal, dbuf, l, &ul);
+			if ((FR_OK != res) || (ul == 0)) {
+				#if FTP_CLIENT_DEBUG
+				perror("FTP Client xfer localfile write");
+				#endif
+				rv = 0;
+				break;
+			}
+		}
+	}
+	free(dbuf);
+	//fflush(local);
+	if(localfile != NULL){
+		//fclose(local);
+		f_close(&fflocal);
+		if(rv != 1)
+			//unlink(localfile);
+			f_unlink(localfile);
+	}
+	closeFtpClient(nData);
+	return rv;
+}
+#endif
 
 
 /*
